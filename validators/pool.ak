@@ -1,23 +1,24 @@
 use aiken/collection/dict
 use aiken/collection/list
 use cardano/address.{Address, Script}
-use cardano/assets.{PolicyId, Value, tokens}
+use cardano/assets.{Lovelace, PolicyId, Value, tokens}
 use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction,
 }
 
-// Pool Action
+// pool action
 pub type Action {
   //-> Deposit
-  Mint(Int, Int)
+  Mint(Lovelace, Int)
   //-> Withdraw
-  Burn(Int, Int)
+  Burn(Lovelace, Int)
 }
 
-// Total tool balance  
+// pool datum
 pub type PoolDatum {
-  balance: Int,
-  total_lp_tokens: Int,
+  balance: Lovelace,
+  lend_out: Lovelace,
+  lp_tokens: Int,
 }
 
 // function for extracting the mint quantity
@@ -29,13 +30,32 @@ pub fn mint_qty(mint: Value, policy_id: PolicyId) -> Int {
   qty
 }
 
+pub fn calculate_lp_delta(input, pool_datum) {
+  expect (balance, lend_out, lp_tokens) = pool_datum
+  when lp_tokens is {
+    0 -> 0
+    _ -> input * lp_tokens / balance
+  }
+}
+
 // Pool Validator
 validator pool {
   // Minting of LP token on deposit
   mint(redeemer action: Action, policy_id: PolicyId, tx: Transaction) {
-    let Transaction { mint, .. } = tx
+    let Transaction { mint, input, .. } = tx
+
+    expect [Pair(asset_name, amount)] =
+      mint
+        |> assets.tokens(policy_id)
+        |> dict.to_pairs()
+
     when action is {
-      Mint(_, lp_amount) -> mint_qty(mint, policy_id) == lp_amount
+      Mint(value, lp_amount) -> and {
+          amount == lp_amount,
+          asset_name == lp_token_name,
+        }
+
+      // pool value danach muss gleich aktueller value + input sein
       Burn(_, lp_amount) -> mint_qty(mint, policy_id) == -lp_amount
     }
   }
@@ -58,6 +78,7 @@ validator pool {
       },
       output_reference: _,
     }) = list.find(inputs, fn(inp) { inp.output_reference == o_ref })
+
     expect Script(this_script_hash) = this_address.payment_credential
     let pool_nft_policy = this_script_hash
     let pool_address =
@@ -68,6 +89,7 @@ validator pool {
     expect PoolDatum {
       balance: input_balance,
       total_lp_tokens: input_lp_tokens,
+      lend_out: input_lend_out,
     } = input_datum
 
     when action is {
@@ -101,6 +123,7 @@ validator pool {
               expect PoolDatum {
                 balance: output_balance,
                 total_lp_tokens: output_lp_tokens,
+                lend_out: output_lend_out,
               } = output_datum
               and {
                 o.address == pool_address,
