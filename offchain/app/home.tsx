@@ -25,7 +25,7 @@ export default function Home() {
 
     useEffect(() => {
         Lucid(
-            new Blockfrost("https://cardano-mainnet.blockfrost.io/api/v0", "mainnet1HfswBLrPqPZ52P00MNeyehdn4m6i7cA"),
+            new Blockfrost("https://cardano-mainnet.blockfrost.io/api/v0", "PUT_APY_KEY_HERE"),
             "Mainnet"
         )
             .then(setLucid)
