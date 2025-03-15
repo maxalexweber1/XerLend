@@ -13,7 +13,7 @@ Test cases for the Aiken Smartcontracts can be found
 - Unit tests pool.ak [`./tests/pool_test.ak`](./tests/pool_tests.ak)
 
 ## Documentation
- See SRS_Document for further documentation  [`./SRS_Document.md`](SRS_Document.md)
+ See SRS_Document for further documentation  [`./documentation/SRS_Document.md`](./documentation/SRS_Document.md)
 
 ## Resources
 https://aiken-lang.org/
