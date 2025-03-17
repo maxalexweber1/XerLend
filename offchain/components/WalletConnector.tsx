@@ -36,7 +36,7 @@ export default function WalletConnectors(props: { onConnectWallet: (wallet: Wall
                 <Button
                     key={`wallet.${w}`}
                     onPress={() => onConnectWallet(wallet)}
-                    className="bg-gradient-to-tr from-blue-500 to-black-500 text-white shadow-lg capitalize">
+                    className="bg-blue-500 text-white shadow-lg capitalize">
                     {wallet.name}
                 </Button>
             ))}

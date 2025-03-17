@@ -33,7 +33,6 @@
         "react-dom": "18.3.1"
     },
     "devDependencies": {
-        "@heroui/accordion": "2.2.12",
         "@next/eslint-plugin-next": "15.0.4",
         "@react-types/shared": "3.25.0",
         "@types/node": "20.5.7",

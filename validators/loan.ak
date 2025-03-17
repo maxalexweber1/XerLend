@@ -174,11 +174,11 @@ validator collateralLoan {
             fn(o) {
               expect InlineDatum(output_datum) = o.datum
               expect CollateralDatum {
-                collateral: output_collateral,
-                risk_rating: output_risk,
+                collateral: _output_collateral,
+                risk_rating: _output_risk,
                 borrowed: output_borrowed,
-                health_factor: output_health,
-                loan_duration: output_duration,
+                health_factor: _output_health,
+                loan_duration: _output_duration,
               } = output_datum
               and {
                 o.address == this_address,

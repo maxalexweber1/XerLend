@@ -23,9 +23,17 @@ export default function Home() {
         return `${address.slice(0, 5)}.....${address.slice(-5)}`;
     }
 
+    const blockfrostApiKey = process.env.NEXT_PUBLIC_BLOCKFROST_API_KEY;
+
     useEffect(() => {
+        if (!blockfrostApiKey) {
+            console.error("Blockfrost API Key is missing!");
+            setError("Missing API Key. Please check environment variables.");
+            return;
+        }
+
         Lucid(
-            new Blockfrost("https://cardano-mainnet.blockfrost.io/api/v0", "PUT_APY_KEY_HERE"),
+            new Blockfrost("https://cardano-preprod.blockfrost.io/api/v0", blockfrostApiKey),
             "Mainnet"
         )
             .then(setLucid)
@@ -51,8 +59,7 @@ export default function Home() {
                 setUtxos(fetchedUtxos); // Update UTXOs state
                 // Gesamtsumme der lovelace berechnen
                 const totalLovelace: bigint = fetchedUtxos.reduce((acc, utxo) => {
-                    // Falls das Asset "lovelace" existiert, addiere es, ansonsten 0n
-                    const lovelace: bigint = utxo.assets?.lovelace ?? 0n;
+                    const lovelace: bigint = BigInt(utxo.assets?.lovelace ?? 0); // Hier setzen wir 0 als Fallback
                     return acc + lovelace;
                 }, 0n);
 
@@ -109,7 +116,7 @@ export default function Home() {
                     address ? (
                         // Wallet verbunden: Dashboard anzeigen
                         <>
-                            <Dashboard address={address} lucid={lucid} utxos={utxos} onError={console.error} />
+                            <Dashboard address={address} lucid={lucid} onError={console.error} />
                         </>
                     ) : (
                         // Keine Wallet verbunden: Wallet-Liste anzeigen
