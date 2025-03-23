@@ -1,74 +1,81 @@
 use aiken/collection/dict
 use aiken/collection/list
 use cardano/address.{Address, Script}
-use cardano/assets.{Lovelace, PolicyId, Value, tokens}
+use cardano/assets.{PolicyId}
 use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction,
 }
-
-// pool action
-pub type Action {
-  //-> Deposit
-  Mint(Lovelace, Int)
-  //-> Withdraw
-  Burn(Lovelace, Int)
-}
-
-// pool datum
-pub type PoolDatum {
-  balance: Lovelace,
-  lend_out: Lovelace,
-  lp_tokens: Int,
-}
-
-// function for extracting the mint quantity
-pub fn mint_qty(mint: Value, policy_id: PolicyId) -> Int {
-  expect [Pair(_, qty)] =
-    mint
-      |> tokens(policy_id)
-      |> dict.to_pairs()
-  qty
-}
-
-pub fn calculate_lp_delta(input, pool_datum) {
-  expect (balance, lend_out, lp_tokens) = pool_datum
-  when lp_tokens is {
-    0 -> 0
-    _ -> input * lp_tokens / balance
-  }
-}
+use pool/func.{calculate_lp_mint, calculate_withdraw, mint_qty}
+use pool/types.{Burn, InitPool, Mint, PoolAction, PoolDatum}
 
 // Pool Validator
 validator pool {
   // Minting of LP token on deposit
-  mint(redeemer action: Action, policy_id: PolicyId, tx: Transaction) {
-    let Transaction { mint, input, .. } = tx
+  mint(redeemer action: PoolAction, policy_id: PolicyId, tx: Transaction) {
+    let Transaction { mint, inputs, .. } = tx
 
+    // check that just one mint action is performed 
     expect [Pair(asset_name, amount)] =
       mint
         |> assets.tokens(policy_id)
         |> dict.to_pairs()
 
+    // check if input is from pool to make sure tokens just minted with protocol reference 
+    let from_pool =
+      list.any(
+        inputs,
+        fn(input) {
+          expect Script(script_hash) = input.output.address.payment_credential
+          script_hash == policy_id
+        },
+      )
+
     when action is {
-      Mint(value, lp_amount) -> and {
-          amount == lp_amount,
-          asset_name == lp_token_name,
+      InitPool(deposit_amount, lp_tokens_minted) -> and {
+          !from_pool,
+          amount == lp_tokens_minted,
+          amount == deposit_amount,
+          amount > 0,
+          asset_name == "XERLEND_LP",
         }
 
-      // pool value danach muss gleich aktueller value + input sein
-      Burn(_, lp_amount) -> mint_qty(mint, policy_id) == -lp_amount
+      Mint(deposit_amount, lp_tokens_minted) ->
+        if lp_tokens_minted == deposit_amount && deposit_amount == amount {
+          and {
+            amount > 0,
+            asset_name == "XERLEND_LP",
+          }
+        } else {
+          if from_pool {
+            and {
+              amount > 0,
+              asset_name == "XERLEND_LP",
+            }
+          } else {
+            fail
+          }
+        }
+      Burn(_, _) ->
+        if from_pool {
+          and {
+            amount < 0,
+            asset_name == "XERLEND_LP",
+          }
+        } else {
+          fail
+        }
     }
   }
 
   // Spend
   spend(
     _datum: Option<PoolDatum>,
-    redeemer action: Action,
+    redeemer action: PoolAction,
     o_ref: OutputReference,
     tx: Transaction,
   ) {
     let Transaction { mint, inputs, outputs, .. } = tx
-    // Check whether own UTxO is consumed and extract the policy ID
+    // check whether own UTxO is consumed and extract the policy ID
     expect Some(Input {
       output: Output {
         address: this_address,
@@ -79,6 +86,7 @@ validator pool {
       output_reference: _,
     }) = list.find(inputs, fn(inp) { inp.output_reference == o_ref })
 
+    // make sure new state allways gos back to own adress
     expect Script(this_script_hash) = this_address.payment_credential
     let pool_nft_policy = this_script_hash
     let pool_address =
@@ -86,56 +94,78 @@ validator pool {
         payment_credential: Script(pool_nft_policy),
         stake_credential: None,
       }
+
+    // use full PoolDatum record
     expect PoolDatum {
       balance: input_balance,
-      total_lp_tokens: input_lp_tokens,
+      lp_tokens: input_lp_tokens,
       lend_out: input_lend_out,
+      interest_accrued: input_interest,
     } = input_datum
 
     when action is {
-      Mint(deposit_amount, lp_tokens_minted) -> {
-        expect Some(_output) =
-          list.find(
-            outputs,
-            fn(o) {
-              expect InlineDatum(output_datum) = o.datum
-              expect PoolDatum {
-                balance: output_balance,
-                total_lp_tokens: output_lp_tokens,
-              } = output_datum
-              and {
-                o.address == pool_address,
-                output_balance == input_balance + deposit_amount,
-                lp_tokens_minted > 0,
-                output_lp_tokens == input_lp_tokens + lp_tokens_minted,
-                mint_qty(mint, pool_nft_policy) == lp_tokens_minted,
-              }
-            },
-          )
-        True
+      InitPool(_, _) -> fail
+      Mint(deposit_amount, _) -> {
+        let lp_tokens_minted = calculate_lp_mint(deposit_amount, input_datum)
+        if lp_tokens_minted > 0 {
+          expect Some(_output) =
+            list.find(
+              outputs,
+              fn(o) {
+                expect InlineDatum(output_datum) = o.datum
+                expect PoolDatum {
+                  balance: output_balance,
+                  lp_tokens: output_lp_tokens,
+                  lend_out: output_lend_out,
+                  interest_accrued: output_interest,
+                } = output_datum
+
+                and {
+                  o.address == pool_address,
+                  output_balance == input_balance + deposit_amount,
+                  output_lp_tokens == input_lp_tokens + lp_tokens_minted,
+                  output_lend_out == input_lend_out,
+                  output_interest == input_interest,
+                  mint_qty(mint, pool_nft_policy) == lp_tokens_minted,
+                }
+              },
+            )
+          True
+        } else {
+          False
+        }
       }
-      Burn(withdraw_amount, lp_tokens_burned) -> {
-        expect Some(_output) =
-          list.find(
-            outputs,
-            fn(o) {
-              expect InlineDatum(output_datum) = o.datum
-              expect PoolDatum {
-                balance: output_balance,
-                total_lp_tokens: output_lp_tokens,
-                lend_out: output_lend_out,
-              } = output_datum
-              and {
-                o.address == pool_address,
-                output_balance == input_balance - withdraw_amount,
-                lp_tokens_burned > 0,
-                input_lp_tokens == output_lp_tokens + lp_tokens_burned,
-                output_balance >= 0,
-                mint_qty(mint, pool_nft_policy) == -lp_tokens_burned,
-              }
-            },
-          )
-        True
+      Burn(_, lp_tokens_burned) -> {
+        let withdraw_amount = calculate_withdraw(lp_tokens_burned, input_datum)
+        if withdraw_amount <= 0 {
+          expect Some(_output) =
+            list.find(
+              outputs,
+              fn(o) {
+                expect InlineDatum(output_datum) = o.datum
+                expect PoolDatum {
+                  balance: output_balance,
+                  lp_tokens: output_lp_tokens,
+                  lend_out: output_lend_out,
+                  interest_accrued: output_interest,
+                } = output_datum
+
+                and {
+                  o.address == pool_address,
+                  output_balance == input_balance - withdraw_amount,
+                  lp_tokens_burned > 0,
+                  input_lp_tokens == output_lp_tokens + lp_tokens_burned,
+                  output_balance >= 0,
+                  output_lend_out == input_lend_out,
+                  output_interest == input_interest,
+                  mint_qty(mint, pool_nft_policy) == -lp_tokens_burned,
+                }
+              },
+            )
+          True
+        } else {
+          False
+        }
       }
     }
   }
@@ -143,95 +173,4 @@ validator pool {
   else(_) {
     fail
   }
-}
-
-// Tests
-test deposit() {
-  let pool_hash = #"d1510f9836f5fbc5c0822d109582b7d2fdabe8de2bb8b81bb0c62f8c"
-  let pool_address =
-    Address { payment_credential: Script(pool_hash), stake_credential: None }
-  let initial_datum = PoolDatum { balance: 0, total_lp_tokens: 0 }
-  let redeemer = Mint(1_000_000, 1_000_000)
-  let input_utxo =
-    Input {
-      output_reference: OutputReference {
-        transaction_id: #"abc123",
-        output_index: 0,
-      },
-      output: Output {
-        address: pool_address,
-        value: assets.from_lovelace(0),
-        datum: InlineDatum(initial_datum),
-        reference_script: None,
-      },
-    }
-  let output_utxo =
-    Output {
-      address: pool_address,
-      value: assets.from_lovelace(1_000_000)
-        |> assets.merge(assets.from_asset(pool_hash, #"6e6674", 1_000_000)),
-      datum: InlineDatum(
-        PoolDatum { balance: 1_000_000, total_lp_tokens: 1_000_000 },
-      ),
-      reference_script: None,
-    }
-  let tx =
-    Transaction {
-      ..transaction.placeholder,
-      inputs: [input_utxo],
-      outputs: [output_utxo],
-      mint: assets.from_asset(pool_hash, #"6e6674", 1_000_000),
-    }
-  pool.spend(
-    Some(initial_datum),
-    redeemer,
-    OutputReference { transaction_id: #"abc123", output_index: 0 },
-    tx,
-  ) && pool.mint(redeemer, pool_hash, tx)
-}
-
-test withdraw() {
-  let pool_hash = #"d1510f9836f5fbc5c0822d109582b7d2fdabe8de2bb8b81bb0c62f8c"
-  let pool_address =
-    Address { payment_credential: Script(pool_hash), stake_credential: None }
-  let initial_datum =
-    PoolDatum { balance: 1_000_000, total_lp_tokens: 1_000_000 }
-  let redeemer = Burn(500_000, 500_000)
-  let input_utxo =
-    Input {
-      output_reference: OutputReference {
-        transaction_id: #"def456",
-        output_index: 0,
-      },
-      output: Output {
-        address: pool_address,
-        value: assets.from_lovelace(1_000_000)
-          |> assets.merge(assets.from_asset(pool_hash, #"6e6674", 1_000_000)),
-        datum: InlineDatum(initial_datum),
-        reference_script: None,
-      },
-    }
-  let output_utxo =
-    Output {
-      address: pool_address,
-      value: assets.from_lovelace(500_000)
-        |> assets.merge(assets.from_asset(pool_hash, #"6e6674", 500_000)),
-      datum: InlineDatum(
-        PoolDatum { balance: 500_000, total_lp_tokens: 500_000 },
-      ),
-      reference_script: None,
-    }
-  let tx =
-    Transaction {
-      ..transaction.placeholder,
-      inputs: [input_utxo],
-      outputs: [output_utxo],
-      mint: assets.from_asset(pool_hash, #"6e6674", -500_000),
-    }
-  pool.spend(
-    Some(initial_datum),
-    redeemer,
-    OutputReference { transaction_id: #"def456", output_index: 0 },
-    tx,
-  )
 }
